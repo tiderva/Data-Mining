@@ -1,0 +1,905 @@
+---
+title: "Group 5 National City Bank Case"
+author: "De Rooij, Tim"
+date: '2018-11-26'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+
+```{r setup, warning = FALSE, message = FALSE, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# set working directory
+setwd("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank")
+
+# clear the environment
+rm( list = ls() )
+
+# load libraries
+library(tidyverse)
+library(chron)
+library(vtreat)
+library(caret)
+library(gains)
+library(tidyverse)
+library(MLmetrics)
+```
+
+### 1 Develop an understanding of the purpose of the data mining project
+
+For a new credit product, we have been asked to identify the 100 most likely customers from a prospective customer list. Marketing and sales effort (and budget) will be allocated to this selection of most likely buyers. To achieve this, we will develop a customer propensity model, based on historical data of 4,000 previous calls and mailings combined with supplemental data.
+
+
+### 2 Obtain the dataset to be used for analysis
+
+We have five datasets to be used for this analysis:
+
+1. Training data: this dataset contains the outcomes of 4,000 previous calls and mailings for a product campaign, which we will use to train and build our customer propensity model
+
+2. Supplemental data: household axiom data
+
+3. Supplemental data: household credit data
+
+4. Supplemental data: household vehicle data
+
+5. New records of prospective customers and their attributes, for which we will make predictions
+
+We start with loading the data.
+
+```{r}
+# load the historical data
+historical.df <- read.csv("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank/training/CurrentCustomerMktgResults.csv")
+
+# load the supplemental data
+sup.axiom.df <- read.csv("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank/training/householdAxiomData.csv")
+sup.credit.df <- read.csv("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank/training/householdCreditData.csv")
+sup.vehicle.df <- read.csv("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank/training/householdVehicleData.csv")
+
+# load the prospective customer data
+prospects.df <- read.csv("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank/ProspectiveCustomers.csv")
+```
+
+
+### 3. Exploratory Data Analysis (EDA), cleaning, and pre-processing
+
+First we look at the **historical data**, our training data, of a previous marketing campaign. From EDA, we learn the following about this dataset:
+
+- We have 4000 observations (rows) and 12 variables (columns)
+- The outcome variable (Y_AccetpedOffer) describes whether a prospect accepted (1) or did not accept (0) the offer
+- 1604 of the 4000 subjects accepted the offer, a success ratio of 40.1%
+- Other variables include information such as month of last contact, number of contacts, communication type, and the outcome of a previous marketing campaign (if applicable, indicated by PrevAttempts = 1 if there has been a previous campaign)
+- ~70% of the communication was by mobile (cellular) phone, ~7% by landline and for 23% of the cases this is unknown
+- LastContactDay and LastContactMonth give information about the date of last contact
+- ~25% of the contact was in May and ~40% in the summer months (June, July August), ~73% in the period April - August
+- The maximum number of contacts equals 43, with a mean of 2.6
+- The mean number of days passed after which a customer was contacted from a previous campaign equals 48, or roughly 1.6 months
+- Circa 25% of the customers in his set have been subject to a previous campaign, ~34% of which were registered as 'success', ~45% as 'failure' and ~20% as 'other', which could mean that the customer is still in process (this should be checked with the marketing team)
+
+```{r}
+# EDA
+dim( historical.df ) # get the dimensions
+names( historical.df ) # get the variable names
+head( historical.df, 4 ) # look at the first 4 rows
+str( historical.df ) # look at the data structure
+summary( historical.df ) # obtain the summary per variable
+sum( historical.df$Y_AccetpedOffer ) # total number of success cases
+```
+
+Visualizations allow us to better understand the data. Examples of insights gained through data visualization are:
+
+- Over 7,000 contacts were conducted by celluar communication.
+
+```{r}
+# VISUALIZATIONS
+# Number of contacts per communication method
+ggplot( historical.df, aes( x = Communication, y = NoOfContacts ) ) + 
+  geom_bar( stat = "identity", colour = "Dodgerblue3" ) + 
+  labs( title = "Number of Contacts per Communication method",
+       subtitle = "Actual",
+       caption = "National City Bank Historical data",
+       tag = "Figure 1",
+       x = "Communication method",
+       y = "Number of Contacts",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+Observations regarding pre-processing and cleaning:
+
+1. Typo in variable name "Y_AccetpedOffer", which we will correct (same holds for prospects dataset)
+2. CallStart and CallEnd do not provide relevant insights by itself, but we can use these to create a new variable to calculate the length of the call, and use this in the training of sales reps. Because this information is not available in the prospects data, we cannot use it in our prediction model (CallStart and Callend are now of class Factor and will have to be converted to a different format before we can use it for analysis)
+3. We have two ID variables, one of them (dataID) is redundant and can be excluded (confirmed after EDA on supplemental data)
+4. We will transform LastContactDay class from integer to factor
+
+```{r}
+# 1 correct typo
+colnames( historical.df )[colnames( historical.df ) == "Y_AccetpedOffer" ] <- "Y_AcceptedOffer"
+colnames( prospects.df )[colnames( prospects.df ) == "Y_AccetpedOffer" ] <- "Y_AcceptedOffer"
+names( historical.df )
+names( prospects.df )
+# 2 create new variable "CallDuration"
+historical.df$CallEnd <- chron( times = historical.df$CallEnd ) # convert to time using chron()
+historical.df$CallStart <- chron( times = historical.df$CallStart ) # convert to time using chron()
+historical.df$CallDuration <- historical.df$CallEnd - historical.df$CallStart
+# 3 Drop redundant ID variable "dataID"
+historical.df$dataID <- NULL
+# 4 Transsform class LastContactDay
+historical.df$LastContactDay <- as.factor( historical.df$LastContactDay )
+```
+
+When we visualize our newly created variable for additional insights we make a number of observations:
+
+- Although the summary statistics tell us that the mean duration is 5 minutes and 51 seconds, by looking at the histogram we can see that calls tend to be shorter than 5 minutes.
+- The mean is skewed by outliers (e.g., Maximum = 54 minutes and 13 seconds).
+- A more useful indicator of typical call duration is the Median: 3 minutes and 52 seconds.
+
+When we compare differences in call duration for success and no success cases we observe:
+
+- Offer Accepted: mean duration = 00:09:12, median duration = 00:07:27
+- Not Accepted: mean duration = 00:03:36, median duration = 00:02:37
+
+Maybe not too surprising, the duration of calls that led to the acceptance of an offer were almost 3x as long as calls that did not lead to offers.
+
+```{r}
+# create historgram
+ggplot( historical.df, aes( x = CallDuration * 1000 ) ) + 
+  geom_histogram( fill = "Dodgerblue3", binwidth = 0.5 ) +
+  labs( title = "Call Duration",
+       subtitle = "In Minutes",
+       caption = "National City Bank Historical data",
+       #tag = "Figure 2",
+       x = "Call Duration (in Minutes)",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+
+# obtain summary statistics
+summary( historical.df$CallDuration )
+
+# calculate mean and median duration for success case
+mean( historical.df$CallDuration[ historical.df$Y_AcceptedOffer == 1 ])
+mean( historical.df$CallDuration[ historical.df$Y_AcceptedOffer == 0 ])
+median( historical.df$CallDuration[ historical.df$Y_AcceptedOffer == 1 ])
+median( historical.df$CallDuration[ historical.df$Y_AcceptedOffer == 0 ])
+```
+
+Assessment of No Of Contacts and acceptance.
+
+```{r}
+accept.noofcontact <- historical.df[ historical.df$Y_AcceptedOffer == 1,
+                                     "NoOfContacts" ]
+notaccept.noofcontact <- historical.df[ historical.df$Y_AcceptedOffer == 0,
+                                        "NoOfContacts" ]
+mean( accept.noofcontact, na.rm = TRUE )
+mean( notaccept.noofcontact, na.rm = TRUE )
+```
+
+
+Next, we look at the **suplemental data**. From EDA, we learn the following:
+
+General observations:
+
+- For the three sets we have 5000 rows each, suggesting that we can use this data to combine with both the historical data (4000 observations) and the prospective customer data (1000 observations), based on customers unique ID's
+- The Column "HHuniqueID" will be the identifier to use for joining the data as part of pre-processing
+
+Axioms data key stats:
+
+- 11 variables providing household information, including gender, age, marital status, job category, level of education, annual donations, luxury shopping behavior, and digital habits
+- ~50/50 split of male and female customers
+- Mean age is 41, median age is 39, the oldest person in the set is 95, youngest is 18
+- 22% of customers are in job category 'management', 19% 'blue-collar', 16% 'technician', 12% 'admin', 8% 'services', 22% 'other'
+- 12% is divorced, 58% is married, 30% is single
+- 14% had primary education, 50% had secondary education, 32% had tertiary education
+
+
+```{r}
+# EDA
+dim( sup.axiom.df ) # get the dimensions
+names( sup.axiom.df ) # get the variable names
+head( sup.axiom.df, 4 ) # look at the first 4 rows
+str( sup.axiom.df ) # look at the data structure
+summary( sup.axiom.df ) # obtain the summary per variable
+```
+
+When we visualize the age data and look at the peak of the curve, we observe a distribution that seems skewed towards younger people. However, below 32 years old represent only 25% of the data in our set (the 1st Quantile). The Median age is 39 and 75% of the people in our set are younger than 49.
+
+```{r}
+# visualize
+ggplot( sup.axiom.df, aes( x = Age ) ) + 
+  geom_histogram( fill = "Dodgerblue3", binwidth = 1 ) +
+  labs( title = "Age",
+       subtitle = "In Years",
+       caption = "Supplemental Axiom Data",
+       # tag = "Figure 3",
+       x = "Age in Years",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+Observations regarding pre-processing and cleaning:
+
+- Annual donations has to be converted to numeric
+
+```{r}
+# convert donations to numeric
+sup.axiom.df$annualDonations <- gsub( "$", "", sup.axiom.df$annualDonations, fixed = TRUE )
+sup.axiom.df$annualDonations <- gsub( ",", "", sup.axiom.df$annualDonations, fixed = TRUE )
+sup.axiom.df$annualDonations <- as.numeric( sup.axiom.df$annualDonations )
+str(sup.axiom.df$annualDonations) # confirm class
+
+# get summary
+summary( sup.axiom.df$annualDonations )
+```
+
+When we visualize the annual donations data we observe a wide variety in the amounts, ranging from close to USD 0 up to USD 1337 (note that we have 4446 NA's, or 88.9% of the observations).
+
+```{r}
+# visualize
+ggplot( sup.axiom.df, aes( x = annualDonations ) ) + 
+  geom_histogram( fill = "Dodgerblue3", binwidth = 10 ) +
+  labs( title = "Annual Donations",
+       subtitle = "In USD",
+       caption = "Supplemental Axiom Data",
+       tag = "Figure 4",
+       x = "Annual Donations in USD",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+Credit data key stats:
+
+- 5 variables for 5000 observations, including default (binary), recent balance, insurance (binary), and whether the customer has a car loan (binary)
+- The mean credit balance is USD 1,506, with a maximum of USD 98,417
+
+```{r}
+# EDA
+dim( sup.credit.df ) # get the dimensions
+names( sup.credit.df ) # get the variable names
+head( sup.credit.df, 4 ) # look at the first 4 rows
+str( sup.credit.df ) # look at the data structure
+summary( sup.credit.df ) # obtain the summary per variable
+```
+
+When we visualize the credit balance data the graph is difficult to read because of the outliers present in the data.
+
+```{r}
+# visualize
+ggplot( sup.credit.df, aes( x = RecentBalance ) ) + 
+  geom_histogram( fill = "Dodgerblue3", binwidth = 100 ) +
+  # xlim( -3500, 3500 ) +
+  labs( title = "Credit Balance",
+       subtitle = "In USD",
+       caption = "Supplemental Credit Data",
+       tag = "Figure 5",
+       x = "Credit Balance in USD",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+The distribution becomes more clear when we scale the x-axis.
+
+```{r}
+# visualize
+ggplot( sup.credit.df, aes( x = RecentBalance ) ) + 
+  geom_histogram( fill = "Dodgerblue3", binwidth = 100 ) +
+  xlim( -3100, 10000 ) +
+  labs( title = "Credit Balance",
+       subtitle = "In USD",
+       caption = "Supplemental Credit Data",
+       #tag = "Figure 6",
+       x = "Credit Balance in USD",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+
+Vehicle data key stats:
+
+- We have 5000 observations of 4 variables
+- Variables include car brand, car model and car year
+- The top 5 car brands in the set are Chevrolet, Ford, Dodge, Toyota and GMC, together representing 31% of the data
+- The oldest car from the set is from 1909, the newest from 2013, the average year is 2000
+
+```{r}
+# EDA
+dim( sup.vehicle.df ) # get the dimensions
+names( sup.vehicle.df ) # get the variable names
+head( sup.vehicle.df, 4 ) # look at the first 4 rows
+str( sup.vehicle.df ) # look at the data structure
+summary( sup.vehicle.df ) # obtain the summary per variable
+```
+
+The final set we explore is the data on new prospects. EDA learns us the following:
+
+- 10 variables for 1000 observations (prospect customers)
+- Same variables as in our Historical data set, except for CallStart and CallEnd
+
+```{r}
+# EDA
+dim( prospects.df ) # get the dimensions
+names( prospects.df ) # get the variable names
+head( prospects.df, 4 ) # look at the first 4 rows
+str( prospects.df ) # look at the data structure
+summary( prospects.df ) # obtain the summary per variable
+
+# plot Days Passed
+ggplot( prospects.df, aes( x = DaysPassed ) ) + 
+  geom_histogram( fill = "Dodgerblue3", binwidth = 100 ) +
+  labs( title = "Histogram Days Passed since last contact",
+       subtitle = "Frequency",
+       caption = "Prospects Data",
+       tag = "Figure 7",
+       x = "Days Passed",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+
+# get median value Days Passed
+median( prospects.df$DaysPassed )
+```
+
+Observations regarding pre-processing and cleaning:
+
+1. We have two ID variables, one of them (dataID) is redundant and can be excluded (confirmed after EDA on supplemental data)
+2. To use LastContactDay, class needs to be transformed from integer to factor
+3. The median value of DaysPassed equals -1. Since -1 days passed is illogical, it could be that the -1 actually suggests 'not available'  or 'NA'. For our analysis, we will drop this variable (see under step 4, reduce data dimension)
+4. The variables "PreviousAttempts" and "Outcome" are related, because the latter provides information about the result of the previous attempts (if any). "Success" suggests that the customer accepted the offer, which is what we are actually trying predict and capture in the variable "Y_AcceptedOffer". This seems conflicting. We also know that we have many missing values for the "Outcome" variable: 76% is "NA". We therefore suggest to exclude these two variables in step 4, data dimension reduction
+
+```{r}
+# 1 drop ID variable
+prospects.df$dataID <- NULL
+# 2 transform data class
+prospects.df$LastContactDay <- as.factor( prospects.df$LastContactDay )
+str(prospects.df)
+```
+
+We have completed our Exploratory Data Analysis. Next step is to combine the historical and prospect data with supplemental data.
+
+```{r}
+# combine data for historical set
+hist.join.axi <- inner_join( historical.df, 
+                             sup.axiom.df, 
+                             by = "HHuniqueID" )
+hist.join.crd <- inner_join( hist.join.axi,
+                             sup.credit.df,
+                             by = "HHuniqueID" )
+combined.historical.df <- inner_join( hist.join.crd,
+                             sup.vehicle.df,
+                             by = "HHuniqueID" )
+
+# examine new data set
+head( combined.historical.df, 4 )
+str( combined.historical.df )
+length( unique( combined.historical.df$HHuniqueID ) ) # double-check uniqueness of IDs
+names( combined.historical.df )
+summary( combined.historical.df )
+
+# combine data for prospect set
+pros.join.axi <- inner_join( prospects.df, 
+                             sup.axiom.df, 
+                             by = "HHuniqueID" )
+pros.join.crd <- inner_join( pros.join.axi,
+                             sup.credit.df,
+                             by = "HHuniqueID" )
+combined.prospects.df <- inner_join( pros.join.crd,
+                             sup.vehicle.df,
+                             by = "HHuniqueID" )
+
+# examine new data set
+head( combined.prospects.df, 4 )
+str( combined.prospects.df )
+summary( combined.prospects.df )
+length( unique( combined.prospects.df$HHuniqueID ) ) # double-check uniqueness of IDs
+names( combined.historical.df )
+```
+
+Assess Default On Record lower for accepters, but small absolute
+
+```{r}
+accept.DefaultOnRecord <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "DefaultOnRecord" ]
+mean( accept.DefaultOnRecord, na.rm = TRUE )
+notaccept.DefaultOnRecord <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "DefaultOnRecord" ]
+mean( notaccept.DefaultOnRecord, na.rm = TRUE )
+```
+
+
+Assess CarLoan: lower for accepters
+
+```{r}
+accept.CarLoan <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "CarLoan" ]
+mean( accept.CarLoan, na.rm = TRUE )
+notaccept.CarLoan <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "CarLoan" ]
+mean( notaccept.CarLoan, na.rm = TRUE )
+```
+
+
+Assess carYr: no difference
+
+```{r}
+accept.carYr <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "carYr" ]
+mean( accept.carYr, na.rm = TRUE )
+notaccept.carYr <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "carYr" ]
+mean( notaccept.carYr, na.rm = TRUE )
+```
+
+Assess HHInsurance: lower for accepters
+
+```{r}
+accept.HHInsurance <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "HHInsurance" ]
+mean( accept.HHInsurance, na.rm = TRUE )
+notaccept.HHInsurance <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "HHInsurance" ]
+mean( notaccept.HHInsurance, na.rm = TRUE )
+```
+
+Assess digital habits: no difference.
+
+```{r}
+accept.dgtl <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "DigitalHabits_5_AlwaysOn" ]
+mean( accept.dgtl, na.rm = TRUE )
+notaccept.dgtl <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "DigitalHabits_5_AlwaysOn" ]
+mean( notaccept.dgtl, na.rm = TRUE )
+```
+
+Assess Acceptance and age: little difference
+
+```{r}
+accept.age <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "Age" ]
+mean( accept.age, na.rm = TRUE )
+notaccept.age <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "Age" ]
+mean( notaccept.age, na.rm = TRUE )
+```
+
+Assess Accept and gender of head of household: little difference (ratio)
+
+```{r}
+accept.gender <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "headOfhouseholdGender" ]
+summary(accept.gender)
+notaccept.gender <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "headOfhouseholdGender" ]
+summary(notaccept.gender)
+```
+
+Assess Mean credit balance accepters vs non-accepters: $300 higher credit balance
+
+```{r}
+accepters.credit <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 1,
+                                      "RecentBalance" ]
+mean( accepters.credit, na.rm = TRUE )
+
+notaccepters.credit <- combined.historical.df[ combined.historical.df$Y_AcceptedOffer == 0,
+                                      "RecentBalance" ]
+mean( notaccepters.credit, na.rm = TRUE )
+```
+
+We are now interested in getting insights in the accepters group, and how they may be different from the non-accepters.
+
+What is the most frequent last month in which we had contact with the accepters.
+
+```{r}
+hist.month.df <- select( combined.historical.df, Y_AcceptedOffer, LastContactMonth )
+historical.accepters <- hist.month.df[ hist.month.df$Y_AcceptedOffer == 1, ]
+levels(historical.accepters$LastContactMonth)
+historical.accepters$LastContactMonth <- factor( 
+  historical.accepters$LastContactMonth, levels = c( "jan", "feb", "mar",
+                                                     "apr", "may", "jun",
+                                                     "jul", "aug", "sep",
+                                                     "oct", "nov", "dec" ) )
+
+ggplot( historical.accepters, aes( x = LastContactMonth, y = Y_AcceptedOffer ) ) + 
+  geom_bar( stat = "identity", colour = "Dodgerblue3" ) + 
+  labs( title = "Histogram of Last Contact Month Acceptance Group",
+       subtitle = "Actual",
+       caption = "National City Bank Historical Data Combined",
+       #tag = "Figure 8",
+       x = "Month",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+Compare vs non-accepters: not much difference, no relevant insights.
+
+```{r}
+historical.non.accepters <- hist.month.df[ hist.month.df$Y_AcceptedOffer == 0, ]
+historical.non.accepters$Y_AcceptedOffer <- 1
+historical.non.accepters$LastContactMonth <- factor( 
+  historical.non.accepters$LastContactMonth, levels = c( "jan", "feb", "mar",
+                                                     "apr", "may", "jun",
+                                                     "jul", "aug", "sep",
+                                                     "oct", "nov", "dec" ) )
+
+ggplot( historical.non.accepters, aes( x = LastContactMonth, y = Y_AcceptedOffer ) ) + 
+  geom_bar( stat = "identity", colour = "Dodgerblue3" ) + 
+  labs( title = "Histogram of Last Contact Month Acceptance Group",
+       subtitle = "Actual",
+       caption = "National City Bank Historical Data Combined",
+       #tag = "Figure 8",
+       x = "Month",
+       y = "Frequency",
+       colour = "Gears" ) + 
+  theme_light()
+```
+
+Assess car model
+
+```{r}
+carMake.df <- combined.historical.df[, c( "carMake", "Y_AcceptedOffer")]
+carMake.df$Accept <- carMake.df$Y_AcceptedOffer
+carMake.df$NotAccept <- carMake.df$Y_AcceptedOffer
+head(carMake.df)
+summary(carMake.df)
+
+carMake.df$Accept[ carMake.df$Y_AcceptedOffer == 1 ] <- 1
+carMake.df$Accept[ carMake.df$Y_AcceptedOffer == 0 ] <- 0
+carMake.df$NotAccept[ carMake.df$Y_AcceptedOffer == 1 ] <- 0
+carMake.df$NotAccept[ carMake.df$Y_AcceptedOffer == 0 ] <- 1
+head(carMake.df)
+
+carMake.df$Y_AcceptedOffer <- NULL
+head(carMake.df)
+
+accept.carmake <- carMake.df[ carMake.df$Accept == 1, ]
+notaccept.carmake <- carMake.df[ carMake.df$Accept == 0, ]
+
+summary( accept.carmake )
+summary( carMake.df )
+
+```
+
+
+### 4. Reduce the data dimension
+
+Parsimony is a desirable feature in a model. We will therefore exclude variables that we do not deem useful for our analysis, based on careful selection. As such, we reduce the data dimension.
+
+Because we want to classify the customers most likely to accept the offer to allocate marketing resources to we want to look at data except for information about communication. We will therefore exclude all communication related data from the training data.
+
+Additionally, we will exclude other variables that are not we deem not useful (as described in section 3).
+
+```{r}
+# drop non-overlapping variables
+combined.historical.df$CallEnd        <- NULL
+combined.historical.df$CallStart      <- NULL
+combined.historical.df$CallDuration   <- NULL
+
+# drop carModel (too many factors)
+combined.historical.df$carModel       <- NULL
+combined.prospects.df$carModel        <- NULL
+
+# drop DaysPassed (too many NAs)
+combined.historical.df$DaysPassed     <- NULL
+combined.prospects.df$DaysPassed      <- NULL
+
+# drop PreviousAttempts and Outcome (conflicting with our Y variable and too many NA)
+combined.historical.df$PrevAttempts   <- NULL
+combined.historical.df$Outcome        <- NULL
+
+combined.prospects.df$PrevAttempts    <- NULL
+combined.prospects.df$Outcome         <- NULL
+
+# exclude other communicastion data
+
+combined.historical.df$Communication   <- NULL
+combined.historical.df$LastContactDay  <- NULL
+combined.historical.df$LastContactMonth<- NULL
+combined.historical.df$NoOfContacts    <- NULL
+
+combined.prospects.df$Communication   <- NULL
+combined.prospects.df$LastContactDay  <- NULL
+combined.prospects.df$LastContactMonth<- NULL
+combined.prospects.df$NoOfContacts    <- NULL
+
+# examine data sets
+head( combined.historical.df )
+head( combined.prospects.df )
+```
+
+### 5. Determine the data mining task
+
+From a list of 1,000 prospects, identify the top 100 with the highest probability of accepting the product offer.
+
+
+### 6. Partition the data
+
+We partition the combined historical data into a training (60%) and validation (40%) set.
+
+```{r}
+# Partition the data
+set.seed( 1234 )
+splitPercent <- round( nrow( combined.historical.df ) %*% 0.6 )
+totalRecords <- 1:nrow( combined.historical.df )
+idx <- sample( totalRecords, splitPercent )
+
+trainDat <- combined.historical.df[idx,]
+validDat <- combined.historical.df[-idx,]
+```
+
+Next, we create a treatment plan and treat our data. Because this is a classification problem, we use designTreatmentC() of the vtreat package.
+
+```{r}
+# get variable names
+names( trainDat )
+# select the variables to treat
+xVars <- c( "headOfhouseholdGender", "annualDonations", 
+            "EstRace", "PetsPurchases", "DigitalHabits_5_AlwaysOn", 
+            "AffluencePurchases", "Age", "Job", "Marital", "Education",
+            "DefaultOnRecord", "RecentBalance", "HHInsurance", "CarLoan", 
+            "carMake", "carYr" )
+
+# create a treatment plan and declare what outcome is a success (1, offer accepted)
+treatmentplan <- designTreatmentsC( trainDat, xVars,'Y_AcceptedOffer', 1 )
+```
+
+Prepare the data with treatment plan.
+
+When we examine the data we observe that new binary variables have been created for the factor variables.
+
+```{r}
+# prepare the data using our treatmentplan
+treatedTrain <- prepare( treatmentplan, trainDat )
+
+# examine dataframe
+head( treatedTrain, 4)
+names( treatedTrain )
+```
+
+
+### 7. Choose the data mining techniques
+
+We will apply k-Nearest Neighbours (k-NN) for this data mining task.
+
+k-Nearest Neighbors method identifies k records in the training data that are similar to a new record we want to classify.
+- Pro: simplicity, no parameter estimation
+- Con: computationally expensive
+
+We use the classes (Accept/Not Accept) of ‘neighbors’ of our Prospects to assign a probability a Prospect will accept the offer.
+
+A higher value of k allows for smoothing and reduces the risk of overfitting.
+Too high value for k limits the model’s ability to capture local structures in the data.
+
+
+### 8. Use algorithm to perform the task
+
+We will train the model using k-NN algorithm from the caret package.
+
+```{r}
+knnFit <- train(as.factor( Y_AcceptedOffer ) ~ ., 
+                data = treatedTrain, 
+                method = "knn", 
+                preProcess = c( "center","scale" ) ) # normalization
+```
+
+When we evaluate the model, we can observe the model use k = 9, the largest value for k under the default settings. This suggest that it may be possible to further optimize the model when we allow for a greater value for k.
+
+```{r}
+knnFit
+plot( knnFit )
+```
+
+We can expand the search for optimal k by using the tuneLenght parameter, we set it to 10.
+
+```{r}
+knnFit <- train(as.factor( Y_AcceptedOffer ) ~ ., 
+                data = treatedTrain, 
+                method = "knn", 
+                preProcess = c( "center","scale" ), # normalization
+                tuneLength = 10 )
+```
+
+We can evaluate the model by plotting the object. The final value for k was 23, resulting in an accuracy of 0.5987, or 59.87%.
+
+```{r}
+knnFit
+plot( knnFit )
+```
+
+When we run the model on the training set and assess its performance we observe an accuracy of 65.46%.
+
+```{r}
+# make predictions on the training data
+trainClasses <- predict(knnFit, treatedTrain )
+confusionMatrix( as.factor( trainDat$Y_AcceptedOffer ), trainClasses )
+```
+
+Next, we treat the validation data using our treatment plan and use our k-NN fitted model to predict whether customer accepted the offer.
+
+We obtain a 61.8% accuracy on the validation set.
+
+```{r}
+# prepare the validation data using our treatmentplan
+treatedValid <- prepare( treatmentplan, validDat )
+
+# make predictions on the validation data
+validClasses <- predict( knnFit, treatedValid )
+confusionMatrix( as.factor( validDat$Y_AcceptedOffer ), validClasses )
+Accuracy( validClasses, validDat$Y_AcceptedOffer )
+```
+
+We can assess probabilities for our validation set. For example, from the table below we can observe a 60.87% probability that the sixth customer in our list accepted the loan offer.
+
+```{r}
+validProbs <- predict( knnFit, treatedValid, type = c( 'prob' ) )
+head( validProbs )
+```
+
+To assess our models predictive performance we can create lift charts. First, we create a data frame that contains the acctual outcome.
+
+```{r}
+# create data frame
+valid.lift.data <- validProbs
+# combine outcome column using cbind
+valid.lift.data <- cbind( valid.lift.data, treatedValid$Y_AcceptedOffer )
+colnames( valid.lift.data )[ colnames( valid.lift.data ) 
+                             == "treatedValid$Y_AcceptedOffer" ] <- "actual"
+colnames( valid.lift.data )[ colnames( valid.lift.data ) 
+                             == "1" ] <- "prob"
+valid.lift.data$`0` <- NULL
+head( valid.lift.data )
+# create object for lift chart
+valid.lift <- lift( relevel( as.factor( actual ), ref = "1" ) ~ prob,
+                    data = valid.lift.data )
+xyplot( valid.lift, plot = "gain" )
+
+# second lift chart
+gain <- gains( valid.lift.data$actual, 
+               valid.lift.data$prob, 
+               groups = dim( valid.lift.data )[1] )
+plot( c( 0, gain$cume.pct.of.total * sum( valid.lift.data$actual ) ) ~ 
+        c( 0, gain$cume.obs ),
+      xlab = "# cases",
+      ylab = "Cumulative",
+      type = "l" )
+lines( c( 0, sum( valid.lift.data$actual ) ) ~ c( 0, dim( valid.lift.data )[1] ), 
+       col = "grey", lty = 2 )
+
+# decile-wise lift chart, using gains() to compute deciles
+gain.deciles <- gains( valid.lift.data$actual, valid.lift.data$prob )
+barplot( gain$mean.resp / mean( valid.lift.data$actual ),
+         names.arg = gain$depth,
+         xlab = "Percentile",
+         ylab = "Mean Response",
+         main = "Decile-wise lift chart" )
+```
+
+When we run our k-NN model on new unseen data, we get the following predictions.
+
+```{r}
+# prepare the new unseen data using our treatmentplan
+treatedProspects <- prepare( treatmentplan, combined.prospects.df )
+
+# make predictions for the prospects data
+ProspectsClasses <- predict( knnFit, treatedProspects )
+
+# View results
+summary( ProspectsClasses )
+```
+
+We can create a probability table for the prospects and select a subset of the top 100 prospects (most likely to accept the offer).
+
+```{r}
+# predict probabilities
+prospectsProbs <- predict( knnFit, treatedProspects, type = c( 'prob' ) )
+# add ID column and change order of columns in data frame
+prospectsProbs$HHuniqueID <- combined.prospects.df$HHuniqueID
+prospectsProbs <- prospectsProbs[, c( 3, 2, 1 )]
+# change column names
+prospectsProbs <- rename( prospectsProbs, "No" = "0", "Yes" = "1" )
+# sort descending
+sorted.prospectsProbs <- arrange( prospectsProbs, desc( Yes ) )
+# select top 100 prospects
+prospect.top.100 <- sorted.prospectsProbs[1:100, ]
+head( prospect.top.100 )
+```
+
+Finally, we want to test the robustness of the model. That is, have the model run several times, learning from different random samples. For this task we created a new function, bank.knn.model.simulator().
+
+```{r}
+bank.knn.model.simulator <- function( number.of.loops, dataset ) {
+  
+   accuracy.data.frame <<- data.frame(
+    Training = 0,
+    Validation = 0 )
+  
+  for( i in 1:number.of.loops ) {
+    
+    splitPercent  <- round( nrow( dataset ) %*% 0.6 )
+    totalRecords  <- 1:nrow( dataset )
+    idx           <- sample( totalRecords, splitPercent )
+    trainDat      <- combined.historical.df[idx,]
+    validDat      <- combined.historical.df[-idx,]
+    
+    xVars <- c( "headOfhouseholdGender", "annualDonations", 
+              "EstRace", "PetsPurchases", "DigitalHabits_5_AlwaysOn", 
+              "AffluencePurchases", "Age", "Job", "Marital", "Education",
+              "DefaultOnRecord", "RecentBalance", "HHInsurance", "CarLoan", 
+              "carMake", "carYr" )
+    
+    treatmentplan <- designTreatmentsC( trainDat, xVars,'Y_AcceptedOffer', 1 )
+    treatedTrain  <- prepare( treatmentplan, trainDat )
+    treatedValid  <- prepare( treatmentplan, validDat )
+    
+    knnFit <- train( as.factor( Y_AcceptedOffer ) ~ ., 
+                data = treatedTrain, 
+                method = "knn", 
+                preProcess = c( "center","scale" ),
+                tuneLength = 10 )
+    
+    trainClasses <- predict( knnFit, treatedTrain )
+    accuracy.data.frame[ i, 1 ] <<- Accuracy( trainClasses, trainDat$Y_AcceptedOffer )
+    validClasses <- predict( knnFit, treatedValid )
+    accuracy.data.frame[ i, 2 ] <<- Accuracy( validClasses, validDat$Y_AcceptedOffer )
+  }
+  message( "Mean Training Accuracy: ",
+           mean( accuracy.data.frame$Training, na.rm = TRUE ) )
+  message( "Mean Validation Accuracy: ",
+           mean( accuracy.data.frame$Validation, na.rm = TRUE ) )
+   
+  setwd("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/National City Bank")
+  jpeg( "Accuracy_Boxplot" )
+  boxplot( accuracy.data.frame$Training, accuracy.data.frame$Validation,
+         pch = 1,
+         col = c("darkgreen", "navyblue"),
+         ylab = "Accuracy",
+         xlab = "Training (left) and Validation (right)",
+         main = "Boxplot of Model Accuracy on Training and Validation Set" )
+  dev.off()
+}
+
+```
+
+Now we call the function and run 10 simulations.
+
+```{r, warning = FALSE, message = FALSE, include = FALSE}
+bank.knn.model.simulator( 10, combined.historical.df )
+```
+
+
+```{r}
+boxplot.accuracy.df <- data.frame( accuracy = 1:20, set = 1:20 )
+boxplot.accuracy.df$accuracy[1:10] <- accuracy.data.frame$Training
+boxplot.accuracy.df$accuracy[11:20] <- accuracy.data.frame$Validation
+boxplot.accuracy.df$set[1:10] <- c( "Training" )
+boxplot.accuracy.df$set[11:20] <- c( "Validation" )
+
+
+p <- ggplot( boxplot.accuracy.df, aes( x = set, y = accuracy ) ) + 
+  geom_boxplot( fill = 'Dodgerblue3', color = "Dodgerblue4" ) + 
+  labs( title = "Boxplot of Model Accuracy on Training and Validation Set",
+        subtitle = "Predictive Performance",
+        caption = "Combined Historical Data",
+        # tag = "Figure 8",
+        y = "Accuracy",
+        colour = "Gears" ) + 
+  theme_light()
+p
+```
+
+
+### 9. Interpret the results of the algorithms
+
+We got an average training accuracy of 66% and a validation accruacy of 61%, suggesting that we have some overfitting. Although the model performs better than selecting prospects randomly, for this data mining task our goal is to achieve higher predictive power than this model is able to achieve. We will therefore explore other algorithms, including Regression Trees, Random Forest, and Logistic Regression.
+
+
+### 10. Deploy the model
+
+# END

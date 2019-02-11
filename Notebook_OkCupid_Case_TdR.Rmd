@@ -1,0 +1,269 @@
+---
+title: "OKCupid"
+author: "Tim de Rooij"
+date: '2018-10-04'
+output:
+  html_document:
+    df_print: paged
+---
+
+# OkCupid Case
+
+## Analysis part I - Census data
+
+```{r}
+
+setwd("/Users/TdR/Coding/R/HarvardDataMiningCourse/cases/okCupid")
+
+library(dplyr)
+library(ggplot2)
+library(maps)
+library(ggmap)
+library(ggthemes)
+library(rbokeh)
+library(leaflet)
+library(devtools)
+
+censusdf <- read.csv('sharedCensus2010Vars.csv')
+names(censusdf)
+
+# select columns that contain information about people living alone and are 65+
+lonelydf <- censusdf %>%
+  select("location",
+         "postalCode", 
+         "city", 
+         "county", 
+         "state", 
+         "P0010001_Total_population", 
+         "H0180022_Householder_65_years_and_over", 
+         "H0180031_Householder_65_years_and_over",
+         "H0180056_Householder_65_years_and_over", 
+         "H0180065_Householder_65_years_and_over")
+
+# add Lat and Lon
+latlon <- read.csv('LatLon.csv')
+
+# add lat lon variables to dataframe
+lonelydf_join <- inner_join(lonelydf, latlon, by = c('location'))
+
+# exclude rows that have NAs
+lonelydf_clean <- na.omit(lonelydf_join)
+
+# exclude data for states other than California
+lonelydf_cali <- lonelydf_clean[lonelydf_clean$state == "California",]
+
+dim(lonelydf_cali)
+unique(lonelydf_cali$city)
+unique(lonelydf_cali$postalCode)
+unique(lonelydf_cali$location)
+# 124 unique locations
+# 117 unique postal codes
+# 111 unique cities
+
+str(lonelydf_cali)
+
+
+# create a new variable that calculates the total of sr 1p households
+lonelydf_cali2 <- mutate(lonelydf_cali,
+       senior_1_person_households = 
+         H0180022_Householder_65_years_and_over + 
+         H0180031_Householder_65_years_and_over + 
+         H0180056_Householder_65_years_and_over + 
+         H0180065_Householder_65_years_and_over
+       )
+
+# create a new variable that calculates the proportion of sr 1p households
+lonelydf_cali3 <- mutate(lonelydf_cali2,
+                         sr_1p_households_percentage = 
+                           senior_1_person_households / P0010001_Total_population * 100
+                         )
+
+# use qmplot to make a scatterplot on a map
+qmplot(lon, lat, data = lonelydf_cali3, maptype = "toner-lite", color = I("red"))  
+
+# define a criteria to identify cities with above average sr people living alone
+# criteria = mean + 2 times the standard deviation
+mean_sr <- mean(lonelydf_cali3$sr_1p_households_percentage)
+standev_sr <- sd(lonelydf_cali3$sr_1p_households_percentage)
+min_sr <- min(lonelydf_cali3$sr_1p_households_percentage)
+max_sr <- max(lonelydf_cali3$sr_1p_households_percentage)
+criteria <- mean_sr + 2 * standev_sr
+
+# create a subset of Californian cities using the criteria
+seniorcities <- lonelydf_cali3[lonelydf_cali3$sr_1p_households_percentage > criteria, ]
+seniorcities <- seniorcities[-4,] #removing duplicate city
+
+# create a barplot to compare living alone rates in the subset
+ggplot(data = seniorcities, 
+       aes( x = seniorcities$city, 
+            y = seniorcities$sr_1p_households_percentage)) + 
+  geom_bar(aes(reorder(city, -sr_1p_households_percentage), sr_1p_households_percentage, 
+               fill = sr_1p_households_percentage),
+         col="blue", alpha = .8, stat="identity") + 
+  labs( x = "City", y = "% one-person senior households") + 
+  labs(title = "Percentage one-person senior households per city")
+
+ggplot(data = seniorcities, 
+       aes( x = seniorcities$city, 
+            y = seniorcities$sr_1p_households_percentage)) + 
+  geom_bar(aes(reorder(city, -sr_1p_households_percentage)),
+           fill = "dodgerblue4", alpha = .7, stat="identity") + 
+  labs( x = "City", y = "% one-person senior households") + 
+  labs(title = "Percentage One-person Senior Households per City") +
+  theme_light() + 
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16, hjust=0))
+
+```
+
+## Analysis part II - OkCupid data
+
+```{r}
+
+okcupiddf <- read.csv("profiles.csv")
+address <- read.csv("addr.csv")
+latlon <- read.csv("LatLon.csv")
+
+dim(okcupiddf)
+
+okcupiddf_1 <- inner_join(okcupiddf, address, by = c('location')) # add state, county, zip
+okcupiddf_2 <- inner_join(okcupiddf_1, latlon, by = c('location')) # add lat and lon
+
+names(okcupiddf_2)
+
+okcupiddf_3 <- okcupiddf_2[-7:-16] # remove essay columns
+
+names(okcupiddf_3)
+
+okcupiddf_cali <- okcupiddf_3[okcupiddf_3$state == "California", ]
+
+dim(okcupiddf_cali)
+
+names(okcupiddf_cali)
+
+nlevels(okcupiddf_cali$postalCode)
+
+# use qmplot to make a scatterplot on a map
+qmplot(lon, lat, data = okcupiddf_cali, maptype = "toner-lite", color = I("red"))
+
+# create a frequency table for the city variable
+citycount <- select(okcupiddf_cali, city)
+citycountdf <- as.data.frame(table(citycount))
+sortedcitycount <- citycountdf[order(citycountdf$Freq),] # sort dataframe (ascending)
+dim(sortedcitycount) # get number of rows
+top5cities <- sortedcitycount[163:167,] # select bottom 5 for top 5 cities
+
+# plot top 5 cities
+ggplot(data = top5cities, 
+       aes( x = top5cities$citycount, 
+            y = top5cities$Freq)) + 
+  geom_bar(aes(reorder(citycount, -Freq)),
+           fill = "dodgerblue4", alpha = .7, stat="identity") + 
+  labs( x = "City", y = "Number of OkCupid Users") + 
+  labs(title = "Number of OkCupid Users Per City") +
+  theme_light() + 
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16, hjust=0))
+
+# create a subset for the users in San Francisco and Oakland
+sf_oakland <- okcupiddf_cali[c(okcupiddf_cali$city == "San Francisco" | okcupiddf_cali$city == "Oakland"), ]
+sf_oakland_clean <- sf_oakland[c(!is.na(sf_oakland$age)),] # clean it for users without 'age'
+
+# create a histogram to see age distribution in San Francisco and Oakland
+qplot(sf_oakland_clean$age,
+      geom="histogram", 
+      binwidth = 0.5, 
+      main = "Histogram for Age of users in San Francisco and Oakland", 
+      xlab = "Age", ylab = "Count",
+      fill=I("dodgerblue4"), alpha = I(.7)
+      )
+
+# create another histogram and add a trendline
+ggplot(data = sf_oakland_clean, aes(sf_oakland_clean$age)) +
+  geom_histogram(aes(y = ..density..), fill=I("dodgerblue4"), alpha = I(.7)) + 
+  geom_density(col=2) + labs( x = "Age", y = "Count")
+
+# create another histogram and add a trendline // changing binwidth size 1
+ggplot(data = sf_oakland_clean, aes(sf_oakland_clean$age)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1, fill=I("dodgerblue4"), alpha = I(.7)) + 
+  geom_density(col=2) + labs( x = "Age", y = "Count") 
+
+# create a histogram to see age distribution in San Francisco and Oakland
+qplot(sf_oakland_clean$age,
+      geom="histogram", 
+      binwidth = 0.5, 
+      main = "Histogram for Age of users in San Francisco and Oakland", 
+      xlab = "Age", ylab = "Count",
+      fill=I("dodgerblue4"), alpha = I(.7)) + theme_light() + 
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16, hjust=0))
+
+# looking for dog owners
+# get the different levels for 'pets'
+unique(sf_oakland_clean$pets)
+
+# create a subset for dog owners in SF and Oakland
+sf_ol_dog_owners <- sf_oakland_clean[c(sf_oakland_clean$pets == "has dogs" | sf_oakland_clean$pets == "has dogs and has cats" | sf_oakland_clean$pets == "has dogs and likes cats"| sf_oakland_clean$pets == "has dogs and dislikes cats"), ]
+str(sf_ol_dog_owners)
+summary(sf_ol_dog_owners)
+
+# create a histogram for the age distribution of dog owners in SF and Oakland
+qplot(sf_ol_dog_owners$age,
+      geom="histogram", 
+      binwidth = 0.5, 
+      # main = "Age distribution of dog owners in San Francisco and Oakland", 
+      xlab = "Age", ylab = "Count",
+      fill=I("dodgerblue4"), alpha = I(.7)) + theme_light() + 
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16, hjust=0))
+
+summary(sf_ol_dog_owners$age)
+
+# create a frequency table for the city variable
+dog_owners_per_city <- select(sf_ol_dog_owners, city)
+dogcitydf <- as.data.frame(table(dog_owners_per_city))
+sf_oak_split <- dogcitydf[c(dogcitydf$Freq != 0), ]
+
+# create a bar plot to show number of dog owners per city
+dogcitybar <- ggplot( data = sf_oak_split, 
+                                   aes( x = sf_oak_split$dog_owners_per_city, 
+                                        y = sf_oak_split$Freq)) + 
+  geom_bar(fill = "dodgerblue4", alpha = .7, stat = "identity") + 
+  labs( x = "City", y = "Number of dog owners") + 
+  theme_light() + 
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16, hjust=0)) + 
+  stat_summary(fun.y = sum, aes(label = ..y.., group = sf_oak_split$dog_owners_per_city), vjust = -.2, geom = "text")
+
+dogcitybar
+
+# Flip it to get horizontal bar plot
+dogcitybar + coord_flip()
+
+# body type distribution
+unique(sf_ol_dog_owners$body_type)
+summary(sf_ol_dog_owners$body_type)
+
+body_fit_athletic <- sum(sf_ol_dog_owners$body_type == "fit" | sf_ol_dog_owners$body_type == "athletic")
+body_average <- sum(sf_ol_dog_owners$body_type == "average")
+body_below_average <- sum(sf_ol_dog_owners$body_type == "thin" | sf_ol_dog_owners$body_type == "skinny")
+body_above_average <- sum(sf_ol_dog_owners$body_type == "curvy" | sf_ol_dog_owners$body_type == "full figured" | sf_ol_dog_owners$body_type == "a little extra" | sf_ol_dog_owners$body_type == "overweight")
+body_other <- sum(sf_ol_dog_owners$body_type == "used up" | sf_ol_dog_owners$body_type == "" | sf_ol_dog_owners$body_type == "jacked" | sf_ol_dog_owners$body_type == "rather not say" )
+
+bodytypedf <- data.frame(c("Fit & Athletic", "Average", "Below average", "Above average", "Other"), 
+                         c(body_fit_athletic, 
+                           body_average, body_below_average, body_above_average, body_other))
+
+names(bodytypedf)[1] <- 'Body_type'
+names(bodytypedf)[2] <- 'Count'
+
+str(bodytypedf)
+
+# create a bar plot to show body_type distribution
+bodytype_bar <- ggplot( data = bodytypedf, 
+                        aes( x = bodytypedf$Body_type, 
+                             y = bodytypedf$Count)) + 
+  geom_bar(fill = "dodgerblue4", alpha = .7, stat = "identity") + 
+  labs( x = "Body type", y = "Count") + 
+  theme_light() + 
+  theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="bold", size=16, hjust=0)) + 
+  stat_summary(fun.y = sum, aes(label = ..y.., group = bodytypedf$Body_type), vjust = -.2, geom = "text")
+
+bodytype_bar
+```
+
